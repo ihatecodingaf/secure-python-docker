@@ -1,0 +1,73 @@
+name: docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: secure-python-api:ci
+  TRIVY: aquasec/trivy:0.76.1
+  HADOLINT: hadolint/hadolint:v2.15.1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: hadolint
+        run: docker run --rm -i -v "$PWD/.hadolint.yaml:/tmp/hadolint.yaml:ro" "$HADOLINT" hadolint --config /tmp/hadolint.yaml - < Dockerfile
+
+  build-test-scan:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Layer cache is stored in the GitHub Actions cache, so CI gets the
+      # same "only rebuild what changed" behaviour as your laptop.
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test with production hardening
+        run: |
+          docker run -d --name api -p 8000:8000 \
+            --read-only --tmpfs /tmp \
+            --cap-drop ALL --security-opt no-new-privileges \
+            "$IMAGE"
+          for i in $(seq 1 30); do curl -fs http://localhost:8000/healthz && break; sleep 1; done
+          echo
+          body=$(curl -fs http://localhost:8000/)
+          echo "$body"
+          echo "$body" | grep -q '"uid":10001' || { echo "container is not running as UID 10001"; exit 1; }
+          if docker run --rm --entrypoint python "$IMAGE" -m pip --version 2>/dev/null; then
+            echo "pip should not exist in the runtime image"; exit 1
+          fi
+          docker logs api
+
+      - name: Vulnerability scan (fail on fixable HIGH/CRITICAL)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE"
+
+      - name: SBOM
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --format spdx-json "$IMAGE" > sbom.spdx.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom.spdx.json

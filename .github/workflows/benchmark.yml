@@ -1,0 +1,66 @@
+name: benchmark
+
+# Builds Dockerfile.naive and Dockerfile side by side on a fresh runner and
+# records the numbers quoted in the README. Run it yourself from the Actions tab.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [Dockerfile, Dockerfile.naive, requirements.txt, .github/workflows/benchmark.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    env:
+      TRIVY: aquasec/trivy:0.76.1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pre-pull base images (so we time the build, not the download)
+        run: |
+          docker pull -q python:3.13
+          docker pull -q "$(sed -n 's/^ARG BASE_IMAGE=//p' Dockerfile)"
+          docker pull -q "$TRIVY"
+
+      - name: Build, change code, rebuild, measure
+        run: |
+          set -euo pipefail
+          now() { date +%s.%N; }
+          elapsed() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+
+          s=$(now); docker build -q -f Dockerfile.naive -t demo:naive . >/dev/null; naive_cold=$(elapsed "$s")
+          s=$(now); docker build -q -f Dockerfile       -t demo:secure . >/dev/null; secure_cold=$(elapsed "$s")
+
+          # Simulate the most common change in real life: a one-line code edit.
+          echo "# touched by benchmark $(date +%s)" >> app/main.py
+
+          s=$(now); docker build -q -f Dockerfile.naive -t demo:naive . >/dev/null; naive_warm=$(elapsed "$s")
+          s=$(now); docker build -q -f Dockerfile       -t demo:secure . >/dev/null; secure_warm=$(elapsed "$s")
+
+          size() { docker image inspect -f '{{.Size}}' "$1" | awk '{ printf "%.0f MB", $1 / 1000 / 1000 }'; }
+          user() { docker run --rm --entrypoint id "$1" -u; }
+          pkgs() { docker run --rm --entrypoint sh "$1" -c 'dpkg-query -f "." -W | wc -c'; }
+          pip_present() { docker run --rm --entrypoint python "$1" -m pip --version >/dev/null 2>&1 && echo yes || echo no; }
+          vulns() {
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image -q --format json "$1" \
+              | python3 -c 'import sys, json
+          from collections import Counter
+          c = Counter(v["Severity"] for r in json.load(sys.stdin).get("Results", []) for v in (r.get("Vulnerabilities") or []))
+          crit, high = c["CRITICAL"], c["HIGH"]
+          print(f"{sum(c.values())} total ({crit} critical, {high} high)")'
+          }
+
+          {
+            echo "| | Dockerfile.naive | Dockerfile |"
+            echo "|---|---|---|"
+            echo "| Cold build | ${naive_cold}s | ${secure_cold}s |"
+            echo "| Rebuild after a one-line code change | ${naive_warm}s | ${secure_warm}s |"
+            echo "| Image size | $(size demo:naive) | $(size demo:secure) |"
+            echo "| OS packages | $(pkgs demo:naive) | $(pkgs demo:secure) |"
+            echo "| Runs as UID | $(user demo:naive) | $(user demo:secure) |"
+            echo "| pip available at runtime | $(pip_present demo:naive) | $(pip_present demo:secure) |"
+            echo "| Known CVEs (Trivy) | $(vulns demo:naive) | $(vulns demo:secure) |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
