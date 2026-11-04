@@ -1,0 +1,7 @@
+# Everything not needed to build the image stays out of the build context.
+# Smaller context = faster builds, and no secrets or .git history leaking in.
+*
+!app/
+!requirements.txt
+app/**/__pycache__
+app/**/*.pyc

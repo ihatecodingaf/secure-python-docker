@@ -1,0 +1,18 @@
+# Run it locally the same way it should run in production.
+services:
+  api:
+    build: .
+    image: secure-python-api:local
+    ports:
+      - "8000:8000"
+    read_only: true            # root filesystem is immutable
+    tmpfs:
+      - /tmp                   # the only writable place, and it's in memory
+    cap_drop:
+      - ALL                    # a web app needs zero Linux capabilities
+    security_opt:
+      - no-new-privileges:true # setuid binaries can't escalate
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
