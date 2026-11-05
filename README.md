@@ -8,10 +8,24 @@ There's also a [`Dockerfile.naive`](Dockerfile.naive) that does everything the "
 
 ## The numbers
 
-Both Dockerfiles built on a fresh GitHub Actions runner by the [benchmark workflow](.github/workflows/benchmark.yml). Nothing here is hand-typed; re-run it from the Actions tab and you'll get your own.
+Both Dockerfiles built back to back on a fresh GitHub Actions runner by the [benchmark workflow](.github/workflows/benchmark.yml). Nothing here is hand-typed; re-run it from the Actions tab and you'll get your own.
 
 <!-- BENCHMARK:START -->
-_Results are filled in from the latest benchmark run._
+| | `Dockerfile.naive` | `Dockerfile` |
+|---|---|---|
+| Rebuild after a one-line code change | 5.0 s | **1.0 s** |
+| Cold build (base images already pulled) | 7.3 s | 6.8 s |
+| Image size | 1,143 MB | **135 MB** |
+| OS packages in the image | 469 | **87** |
+| Runs as UID | 0 (root) | **10001** |
+| `pip` available at runtime | yes | **no** |
+| Known CVEs (Trivy, all severities) | 4,039 (16 critical, 564 high) | **187 (0 critical, 45 high)** |
+
+[Benchmark run #41879400075](https://github.com/ihatecodingaf/secure-python-docker/actions/runs/41879400075)
+
+The rebuild row is the one you feel every day. The naive file reinstalls every dependency on any change; this one only rebuilds the last layer. On a real project with heavier dependencies the gap is minutes, not seconds.
+
+About those 45 "high" CVEs: they're in Debian packages that don't have a fixed version yet. CI fails on anything that *does* have a fix, so as soon as Debian ships one, Dependabot bumps the base image digest and the count drops. Going distroless or scratch would cut it further, with the trade-offs covered below.
 <!-- BENCHMARK:END -->
 
 ## Run it
